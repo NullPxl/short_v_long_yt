@@ -10,6 +10,11 @@ from typing import Dict, Iterable, List, Optional, Sequence
 
 from googleapiclient.discovery import build
 
+try:
+    from keys import GOOGLE_API_KEY as LOCAL_GOOGLE_API_KEY
+except ImportError:
+    LOCAL_GOOGLE_API_KEY = None
+
 
 ISO8601_DURATION_RE = re.compile(
     r"^PT"
@@ -294,7 +299,11 @@ def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
         description="Collect longitudinal YouTube stats (views/likes/comments) for channel uploads into CSV files."
     )
-    parser.add_argument("--api-key", default=os.getenv("YOUTUBE_API_KEY"), required=False)
+    parser.add_argument(
+        "--api-key",
+        default=LOCAL_GOOGLE_API_KEY or os.getenv("YOUTUBE_API_KEY"),
+        required=False,
+    )
     parser.add_argument("--channel-id", required=True)
     parser.add_argument("--output-dir", default="data")
     parser.add_argument("--poll-seconds", type=int, default=300)
@@ -308,7 +317,9 @@ def parse_args() -> argparse.Namespace:
 def main() -> None:
     args = parse_args()
     if not args.api_key:
-        raise SystemExit("Missing API key. Provide --api-key or set YOUTUBE_API_KEY.")
+        raise SystemExit(
+            "Missing API key. Set GOOGLE_API_KEY in keys.py, provide --api-key, or set YOUTUBE_API_KEY."
+        )
 
     logging.basicConfig(
         level=getattr(logging, args.log_level.upper(), logging.INFO),
