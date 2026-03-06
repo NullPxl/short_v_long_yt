@@ -14,9 +14,12 @@ import re
 import time
 from dataclasses import dataclass
 from typing import Dict, List, Optional, Sequence
+from keys import API_KEY as GOOGLE_API_KEY
 
 from googleapiclient.discovery import build
 
+CHANNEL_ID = "UCWJ2lWNubArHWmf3FIHbfcQ"
+SINCE_DATETIME = "2026-03-06T00:00:00Z"
 
 ISO8601_DURATION_RE = re.compile(
     r"^PT"
@@ -266,18 +269,18 @@ def parse_args() -> argparse.Namespace:
     )
     parser.add_argument(
         "--api-key",
-        default=os.getenv("YOUTUBE_API_KEY"),
+        default=GOOGLE_API_KEY,
         help="YouTube API key (or set YOUTUBE_API_KEY)",
     )
     parser.add_argument(
         "--channels",
-        required=True,
         nargs="+",
+        default=[CHANNEL_ID],
         help="Channel IDs to monitor (space-separated)",
     )
     parser.add_argument(
         "--since",
-        required=True,
+        default=SINCE_DATETIME,
         help="Only collect videos published after this datetime (ISO8601, e.g. 2025-03-01T00:00:00Z)",
     )
     parser.add_argument(
@@ -347,3 +350,4 @@ def main() -> None:
 
 if __name__ == "__main__":
     main()
+    time.sleep(100000)
