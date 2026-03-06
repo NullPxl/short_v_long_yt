@@ -17,10 +17,13 @@ except ImportError:
 
 
 ISO8601_DURATION_RE = re.compile(
-    r"^PT"
+    r"^P"
+    r"(?:(?P<days>\d+)D)?"
+    r"(?:T"
     r"(?:(?P<hours>\d+)H)?"
     r"(?:(?P<minutes>\d+)M)?"
     r"(?:(?P<seconds>\d+)S)?$"
+    r")?$"
 )
 
 VIDEO_COLUMNS = [
@@ -57,10 +60,11 @@ def parse_iso8601_duration_seconds(duration: str) -> int:
     if not match:
         raise ValueError(f"Unsupported ISO-8601 duration: {duration}")
 
+    days = int(match.group("days") or 0)
     hours = int(match.group("hours") or 0)
     minutes = int(match.group("minutes") or 0)
     seconds = int(match.group("seconds") or 0)
-    return hours * 3600 + minutes * 60 + seconds
+    return days * 86400 + hours * 3600 + minutes * 60 + seconds
 
 
 @dataclass
