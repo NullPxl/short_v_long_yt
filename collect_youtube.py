@@ -1,9 +1,9 @@
 import argparse
+import csv
 import datetime as dt
 import logging
 import os
 import re
-import sqlite3
 import time
 from dataclasses import dataclass
 from typing import Dict, Iterable, List, Optional, Sequence
@@ -17,6 +17,30 @@ ISO8601_DURATION_RE = re.compile(
     r"(?:(?P<minutes>\d+)M)?"
     r"(?:(?P<seconds>\d+)S)?$"
 )
+
+VIDEO_COLUMNS = [
+    "video_id",
+    "channel_id",
+    "title",
+    "published_at",
+    "duration_seconds",
+    "is_short",
+    "first_seen_at",
+    "last_seen_at",
+]
+
+SNAPSHOT_COLUMNS = [
+    "captured_at",
+    "video_id",
+    "channel_id",
+    "title",
+    "published_at",
+    "duration_seconds",
+    "is_short",
+    "view_count",
+    "like_count",
+    "comment_count",
+]
 
 
 def utc_now_iso() -> str:
@@ -46,73 +70,87 @@ class VideoRecord:
     comment_count: Optional[int]
 
 
+class CsvStore:
+    def __init__(self, output_dir: str) -> None:
+        self.output_dir = output_dir
+        self.videos_csv_path = os.path.join(output_dir, "videos.csv")
+        self.snapshots_csv_path = os.path.join(output_dir, "snapshots.csv")
+        self._ensure_files()
+
+    def _ensure_files(self) -> None:
+        os.makedirs(self.output_dir, exist_ok=True)
+        self._ensure_csv(self.videos_csv_path, VIDEO_COLUMNS)
+        self._ensure_csv(self.snapshots_csv_path, SNAPSHOT_COLUMNS)
+
+    @staticmethod
+    def _ensure_csv(path: str, columns: Sequence[str]) -> None:
+        if os.path.exists(path):
+            return
+        with open(path, "w", newline="", encoding="utf-8") as f:
+            writer = csv.DictWriter(f, fieldnames=columns)
+            writer.writeheader()
+
+    def load_videos_index(self) -> Dict[str, Dict[str, str]]:
+        index: Dict[str, Dict[str, str]] = {}
+        with open(self.videos_csv_path, "r", newline="", encoding="utf-8") as f:
+            reader = csv.DictReader(f)
+            for row in reader:
+                video_id = row.get("video_id")
+                if video_id:
+                    index[video_id] = row
+        return index
+
+    def tracked_video_ids(self, channel_id: str, include_shorts: bool) -> List[str]:
+        video_ids: List[str] = []
+        with open(self.videos_csv_path, "r", newline="", encoding="utf-8") as f:
+            reader = csv.DictReader(f)
+            for row in reader:
+                if row.get("channel_id") != channel_id:
+                    continue
+                if not include_shorts and row.get("is_short") == "1":
+                    continue
+                if row.get("video_id"):
+                    video_ids.append(row["video_id"])
+        return video_ids
+
+    def write_videos_index(self, index: Dict[str, Dict[str, str]]) -> None:
+        rows = sorted(index.values(), key=lambda r: (r["channel_id"], r["published_at"], r["video_id"]))
+        with open(self.videos_csv_path, "w", newline="", encoding="utf-8") as f:
+            writer = csv.DictWriter(f, fieldnames=VIDEO_COLUMNS)
+            writer.writeheader()
+            writer.writerows(rows)
+
+    def append_snapshots(self, rows: Iterable[Dict[str, str]]) -> int:
+        count = 0
+        with open(self.snapshots_csv_path, "a", newline="", encoding="utf-8") as f:
+            writer = csv.DictWriter(f, fieldnames=SNAPSHOT_COLUMNS)
+            for row in rows:
+                writer.writerow(row)
+                count += 1
+        return count
+
+
 class YouTubeCollector:
     def __init__(
         self,
         api_key: str,
         channel_id: str,
-        db_path: str,
+        output_dir: str,
         include_shorts: bool = False,
         discover_pages: int = 2,
     ) -> None:
         self.api_key = api_key
         self.channel_id = channel_id
-        self.db_path = db_path
         self.include_shorts = include_shorts
         self.discover_pages = max(1, discover_pages)
 
         self.youtube = build("youtube", "v3", developerKey=self.api_key)
-        self.conn = sqlite3.connect(self.db_path)
-        self.conn.row_factory = sqlite3.Row
-        self._init_db()
-
-    def _init_db(self) -> None:
-        self.conn.executescript(
-            """
-            CREATE TABLE IF NOT EXISTS channels (
-                channel_id TEXT PRIMARY KEY,
-                uploads_playlist_id TEXT NOT NULL,
-                created_at TEXT NOT NULL
-            );
-
-            CREATE TABLE IF NOT EXISTS videos (
-                video_id TEXT PRIMARY KEY,
-                channel_id TEXT NOT NULL,
-                title TEXT NOT NULL,
-                published_at TEXT NOT NULL,
-                duration_seconds INTEGER NOT NULL,
-                is_short INTEGER NOT NULL,
-                first_seen_at TEXT NOT NULL,
-                last_seen_at TEXT NOT NULL,
-                FOREIGN KEY(channel_id) REFERENCES channels(channel_id)
-            );
-
-            CREATE TABLE IF NOT EXISTS snapshots (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                video_id TEXT NOT NULL,
-                captured_at TEXT NOT NULL,
-                view_count INTEGER NOT NULL,
-                like_count INTEGER,
-                comment_count INTEGER,
-                FOREIGN KEY(video_id) REFERENCES videos(video_id)
-            );
-
-            CREATE INDEX IF NOT EXISTS idx_videos_channel ON videos(channel_id);
-            CREATE INDEX IF NOT EXISTS idx_snapshots_video_time ON snapshots(video_id, captured_at);
-            """
-        )
-        self.conn.commit()
-
-    def close(self) -> None:
-        self.conn.close()
+        self.store = CsvStore(output_dir)
+        self._uploads_playlist_id: Optional[str] = None
 
     def get_uploads_playlist_id(self) -> str:
-        row = self.conn.execute(
-            "SELECT uploads_playlist_id FROM channels WHERE channel_id = ?",
-            (self.channel_id,),
-        ).fetchone()
-        if row:
-            return row["uploads_playlist_id"]
+        if self._uploads_playlist_id:
+            return self._uploads_playlist_id
 
         resp = (
             self.youtube.channels()
@@ -123,17 +161,8 @@ class YouTubeCollector:
         if not items:
             raise RuntimeError(f"Channel not found: {self.channel_id}")
 
-        uploads_id = items[0]["contentDetails"]["relatedPlaylists"]["uploads"]
-        self.conn.execute(
-            """
-            INSERT INTO channels (channel_id, uploads_playlist_id, created_at)
-            VALUES (?, ?, ?)
-            ON CONFLICT(channel_id) DO UPDATE SET uploads_playlist_id = excluded.uploads_playlist_id
-            """,
-            (self.channel_id, uploads_id, utc_now_iso()),
-        )
-        self.conn.commit()
-        return uploads_id
+        self._uploads_playlist_id = items[0]["contentDetails"]["relatedPlaylists"]["uploads"]
+        return self._uploads_playlist_id
 
     def discover_recent_upload_ids(self, uploads_playlist_id: str) -> List[str]:
         video_ids: List[str] = []
@@ -158,7 +187,6 @@ class YouTubeCollector:
             if not next_page_token:
                 break
 
-        # Preserve order while deduplicating.
         seen = set()
         deduped = []
         for vid in video_ids:
@@ -179,112 +207,96 @@ class YouTubeCollector:
                 .list(part="snippet,contentDetails,statistics", id=",".join(chunk), maxResults=50)
                 .execute()
             )
+
             for item in resp.get("items", []):
                 stats = item.get("statistics", {})
                 snippet = item.get("snippet", {})
                 content_details = item.get("contentDetails", {})
 
                 duration_s = parse_iso8601_duration_seconds(content_details.get("duration", "PT0S"))
-                is_short = duration_s <= 60
-
-                rec = VideoRecord(
-                    video_id=item["id"],
-                    title=snippet.get("title", ""),
-                    published_at=snippet.get("publishedAt", ""),
-                    duration_seconds=duration_s,
-                    is_short=is_short,
-                    view_count=int(stats.get("viewCount", 0)),
-                    like_count=int(stats["likeCount"]) if "likeCount" in stats else None,
-                    comment_count=int(stats["commentCount"]) if "commentCount" in stats else None,
+                records.append(
+                    VideoRecord(
+                        video_id=item["id"],
+                        title=snippet.get("title", ""),
+                        published_at=snippet.get("publishedAt", ""),
+                        duration_seconds=duration_s,
+                        is_short=duration_s <= 60,
+                        view_count=int(stats.get("viewCount", 0)),
+                        like_count=int(stats["likeCount"]) if "likeCount" in stats else None,
+                        comment_count=int(stats["commentCount"]) if "commentCount" in stats else None,
+                    )
                 )
-                records.append(rec)
 
         return records
 
-    def upsert_videos_and_snapshot(self, records: Iterable[VideoRecord]) -> int:
-        now = utc_now_iso()
-        snap_count = 0
+    def collect_once(self) -> Dict[str, int]:
+        uploads_playlist_id = self.get_uploads_playlist_id()
+        discovered_ids = self.discover_recent_upload_ids(uploads_playlist_id)
+        tracked_ids = self.store.tracked_video_ids(self.channel_id, self.include_shorts)
+
+        all_ids: List[str] = []
+        seen = set()
+        for vid in discovered_ids + tracked_ids:
+            if vid not in seen:
+                seen.add(vid)
+                all_ids.append(vid)
+
+        records = self.fetch_video_records(all_ids)
+        captured_at = utc_now_iso()
+
+        videos_index = self.store.load_videos_index()
+        snapshot_rows: List[Dict[str, str]] = []
 
         for rec in records:
             if rec.is_short and not self.include_shorts:
                 continue
 
-            self.conn.execute(
-                """
-                INSERT INTO videos (
-                    video_id, channel_id, title, published_at, duration_seconds, is_short, first_seen_at, last_seen_at
-                )
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-                ON CONFLICT(video_id) DO UPDATE SET
-                    title = excluded.title,
-                    published_at = excluded.published_at,
-                    duration_seconds = excluded.duration_seconds,
-                    is_short = excluded.is_short,
-                    last_seen_at = excluded.last_seen_at
-                """,
-                (
-                    rec.video_id,
-                    self.channel_id,
-                    rec.title,
-                    rec.published_at,
-                    rec.duration_seconds,
-                    int(rec.is_short),
-                    now,
-                    now,
-                ),
+            previous = videos_index.get(rec.video_id)
+            first_seen_at = previous["first_seen_at"] if previous else captured_at
+            videos_index[rec.video_id] = {
+                "video_id": rec.video_id,
+                "channel_id": self.channel_id,
+                "title": rec.title,
+                "published_at": rec.published_at,
+                "duration_seconds": str(rec.duration_seconds),
+                "is_short": "1" if rec.is_short else "0",
+                "first_seen_at": first_seen_at,
+                "last_seen_at": captured_at,
+            }
+
+            snapshot_rows.append(
+                {
+                    "captured_at": captured_at,
+                    "video_id": rec.video_id,
+                    "channel_id": self.channel_id,
+                    "title": rec.title,
+                    "published_at": rec.published_at,
+                    "duration_seconds": str(rec.duration_seconds),
+                    "is_short": "1" if rec.is_short else "0",
+                    "view_count": str(rec.view_count),
+                    "like_count": "" if rec.like_count is None else str(rec.like_count),
+                    "comment_count": "" if rec.comment_count is None else str(rec.comment_count),
+                }
             )
 
-            self.conn.execute(
-                """
-                INSERT INTO snapshots (video_id, captured_at, view_count, like_count, comment_count)
-                VALUES (?, ?, ?, ?, ?)
-                """,
-                (rec.video_id, now, rec.view_count, rec.like_count, rec.comment_count),
-            )
-            snap_count += 1
-
-        self.conn.commit()
-        return snap_count
-
-    def get_tracked_video_ids(self) -> List[str]:
-        rows = self.conn.execute(
-            """
-            SELECT video_id
-            FROM videos
-            WHERE channel_id = ?
-              AND (is_short = 0 OR ? = 1)
-            """,
-            (self.channel_id, int(self.include_shorts)),
-        ).fetchall()
-        return [r["video_id"] for r in rows]
-
-    def collect_once(self) -> Dict[str, int]:
-        uploads_playlist_id = self.get_uploads_playlist_id()
-        discovered_ids = self.discover_recent_upload_ids(uploads_playlist_id)
-        discovered_set = set(discovered_ids)
-
-        discovered_records = self.fetch_video_records(discovered_ids)
-        snap_discovered = self.upsert_videos_and_snapshot(discovered_records)
-
-        tracked_ids = [vid for vid in self.get_tracked_video_ids() if vid not in discovered_set]
-        tracked_records = self.fetch_video_records(tracked_ids)
-        snap_tracked = self.upsert_videos_and_snapshot(tracked_records)
+        self.store.write_videos_index(videos_index)
+        snapshot_count = self.store.append_snapshots(snapshot_rows)
 
         return {
             "discovered_ids": len(discovered_ids),
-            "discovered_snapshots": snap_discovered,
             "tracked_ids": len(tracked_ids),
-            "tracked_snapshots": snap_tracked,
+            "queried_ids": len(all_ids),
+            "snapshots_written": snapshot_count,
         }
 
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
-        description="Collect longitudinal YouTube stats (views/likes/comments) for channel uploads."
+        description="Collect longitudinal YouTube stats (views/likes/comments) for channel uploads into CSV files."
     )
     parser.add_argument("--api-key", default=os.getenv("YOUTUBE_API_KEY"), required=False)
     parser.add_argument("--channel-id", required=True)
-    parser.add_argument("--db-path", default="data/youtube_stats.db")
+    parser.add_argument("--output-dir", default="data")
     parser.add_argument("--poll-seconds", type=int, default=300)
     parser.add_argument("--discover-pages", type=int, default=2)
     parser.add_argument("--include-shorts", action="store_true")
@@ -298,8 +310,6 @@ def main() -> None:
     if not args.api_key:
         raise SystemExit("Missing API key. Provide --api-key or set YOUTUBE_API_KEY.")
 
-    os.makedirs(os.path.dirname(args.db_path) or ".", exist_ok=True)
-
     logging.basicConfig(
         level=getattr(logging, args.log_level.upper(), logging.INFO),
         format="%(asctime)s | %(levelname)s | %(message)s",
@@ -308,36 +318,34 @@ def main() -> None:
     collector = YouTubeCollector(
         api_key=args.api_key,
         channel_id=args.channel_id,
-        db_path=args.db_path,
+        output_dir=args.output_dir,
         include_shorts=args.include_shorts,
         discover_pages=args.discover_pages,
     )
 
-    try:
-        if args.once:
+    if args.once:
+        stats = collector.collect_once()
+        logging.info("One-time collection complete: %s", stats)
+        return
+
+    logging.info(
+        "Starting collector for channel=%s, poll=%ss, include_shorts=%s, output_dir=%s",
+        args.channel_id,
+        args.poll_seconds,
+        args.include_shorts,
+        args.output_dir,
+    )
+    while True:
+        started = time.time()
+        try:
             stats = collector.collect_once()
-            logging.info("One-time collection complete: %s", stats)
-            return
+            logging.info("Collection tick: %s", stats)
+        except Exception:
+            logging.exception("Collection tick failed")
 
-        logging.info(
-            "Starting collector for channel=%s, poll=%ss, include_shorts=%s",
-            args.channel_id,
-            args.poll_seconds,
-            args.include_shorts,
-        )
-        while True:
-            started = time.time()
-            try:
-                stats = collector.collect_once()
-                logging.info("Collection tick: %s", stats)
-            except Exception:
-                logging.exception("Collection tick failed")
-
-            elapsed = time.time() - started
-            sleep_s = max(1, args.poll_seconds - int(elapsed))
-            time.sleep(sleep_s)
-    finally:
-        collector.close()
+        elapsed = time.time() - started
+        sleep_s = max(1, args.poll_seconds - int(elapsed))
+        time.sleep(sleep_s)
 
 
 if __name__ == "__main__":

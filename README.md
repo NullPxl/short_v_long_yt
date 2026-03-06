@@ -2,14 +2,14 @@
 
 Collect longitudinal YouTube performance metrics over time.
 
-Current scope: **regular videos first** (views, likes, comments). Shorts support is scaffolded and can be enabled later.
+Current scope: regular videos first (views, likes, comments). Shorts support is scaffolded and can be enabled later.
 
 ## What this does
 
 - Detects recent uploads from a channel's uploads playlist.
-- Captures a timestamped snapshot of stats.
-- Stores snapshots in SQLite so you can analyze growth over time.
-- Polls continuously (or run once).
+- Captures timestamped snapshots of video stats.
+- Stores everything in plain CSV files.
+- Polls continuously (or runs once).
 
 ## Setup
 
@@ -23,55 +23,68 @@ pip install -r requirements.txt
 3. Create a YouTube Data API v3 key.
 4. Export your API key:
 
-```bash
-# PowerShell
+```powershell
 $env:YOUTUBE_API_KEY="your_api_key"
 ```
 
 ## Run (videos only)
 
 ```bash
-python collect_youtube.py --channel-id UC_x5XG1OV2P6uZZ5FSM9Ttw --poll-seconds 60
+python collect_youtube.py --channel-id UC_x5XG1OV2P6uZZ5FSM9Ttw --poll-seconds 60 --output-dir data
 ```
 
-Recommended for early-post-upload tracking: run with low polling interval (e.g. 30-120 seconds).
+Recommended for early-post-upload tracking: use a low poll interval (30-120 seconds).
 
 One-time run:
 
 ```bash
-python collect_youtube.py --channel-id UC_x5XG1OV2P6uZZ5FSM9Ttw --once
+python collect_youtube.py --channel-id UC_x5XG1OV2P6uZZ5FSM9Ttw --once --output-dir data
 ```
 
 ## Shorts later
 
-By default, videos with duration <= 60s are excluded.
+By default, videos with duration <= 60 seconds are excluded.
 
 To include shorts now (optional):
 
 ```bash
-python collect_youtube.py --channel-id UC_x5XG1OV2P6uZZ5FSM9Ttw --include-shorts
+python collect_youtube.py --channel-id UC_x5XG1OV2P6uZZ5FSM9Ttw --include-shorts --output-dir data
 ```
 
-## Storage
+## CSV Output Schema
 
-SQLite file default: `data/youtube_stats.db`
+Default output directory: `data/`
 
-Tables:
+Files written:
 
-- `channels`
-- `videos`
-- `snapshots`
+- `videos.csv`: one row per known video (latest metadata + first/last seen timestamps).
+- `snapshots.csv`: append-only time series (one row per capture timestamp per video).
 
-Example query: latest time-series for one video
+### `videos.csv` columns
 
-```sql
-SELECT captured_at, view_count, like_count, comment_count
-FROM snapshots
-WHERE video_id = 'VIDEO_ID_HERE'
-ORDER BY captured_at;
-```
+- `video_id`: YouTube video ID.
+- `channel_id`: YouTube channel ID.
+- `title`: latest observed title.
+- `published_at`: YouTube publish timestamp (ISO-8601 UTC string).
+- `duration_seconds`: parsed duration in seconds.
+- `is_short`: `1` if duration <= 60 seconds, else `0`.
+- `first_seen_at`: first time this collector observed the video (ISO-8601 UTC string).
+- `last_seen_at`: most recent observation time (ISO-8601 UTC string).
+
+### `snapshots.csv` columns
+
+- `captured_at`: timestamp when stats were captured (ISO-8601 UTC string).
+- `video_id`: YouTube video ID.
+- `channel_id`: YouTube channel ID.
+- `title`: title at capture time.
+- `published_at`: YouTube publish timestamp (ISO-8601 UTC string).
+- `duration_seconds`: parsed duration in seconds at capture time.
+- `is_short`: `1` if duration <= 60 seconds, else `0`.
+- `view_count`: integer view count at capture time.
+- `like_count`: integer like count at capture time, blank when hidden/unavailable.
+- `comment_count`: integer comment count at capture time, blank when hidden/unavailable.
 
 ## Notes
 
-- API quota usage scales with polling frequency and number of tracked videos.
-- Keep `--discover-pages` small unless you need deep backfill.
+- API quota usage scales with poll frequency and number of tracked videos.
+- Keep `--discover-pages` small unless you want deeper upload discovery/backfill.
