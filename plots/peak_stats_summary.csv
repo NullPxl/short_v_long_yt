@@ -1,0 +1,3 @@
+group,n_items,time_to_peak_mean_min,time_to_peak_median_min,peak_duration_mean_min,peak_duration_median_min,n_with_detected_drop
+videos,21,301.6793650793651,329.3833333333333,18.992857142857144,14.883333333333333,21
+shorts,21,126.23492063492064,19.9,27.95634920634921,22.916666666666668,21
