@@ -53,6 +53,27 @@ def load_single_series(
     return series, item_id
 
 
+def make_pct_change_15m(series: pd.DataFrame) -> pd.DataFrame:
+    s = (
+        series.set_index("captured_at")[["view_count"]]
+        .sort_index()
+        .resample("15min")
+        .last()
+        .dropna()
+        .reset_index()
+    )
+    if s.empty:
+        s["hours_since_first_seen"] = pd.Series(dtype=float)
+        s["view_pct_change_15m"] = pd.Series(dtype=float)
+        return s
+
+    s["hours_since_first_seen"] = (s["captured_at"] - s["captured_at"].min()).dt.total_seconds() / 3600.0
+    prev = s["view_count"].shift(1)
+    s["view_pct_change_15m"] = ((s["view_count"] - prev) / prev) * 100.0
+    s = s[prev > 0].copy()
+    return s
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(
         description=(
@@ -98,27 +119,47 @@ def main() -> None:
         args.short_id,
         exclude_id=resolved_video_id if args.short_id is None else None,
     )
+    video_pct_15m = make_pct_change_15m(video_series)
+    short_pct_15m = make_pct_change_15m(short_series)
 
     args.output.parent.mkdir(parents=True, exist_ok=True)
 
-    fig, ax = plt.subplots(figsize=(11, 6))
-    ax.plot(
+    fig, (ax_left, ax_right) = plt.subplots(1, 2, figsize=(14, 6))
+    ax_left.plot(
         video_series["hours_since_first_seen"],
         video_series["view_gain_per_hour"],
         linewidth=2.0,
         label=f"Video: {resolved_video_id}",
     )
-    ax.plot(
+    ax_left.plot(
         short_series["hours_since_first_seen"],
         short_series["view_gain_per_hour"],
         linewidth=2.0,
         label=f"Short: {resolved_short_id}",
     )
-    ax.set_title("View Growth Rate Over Time: One Video vs One Short")
-    ax.set_xlabel("Hours Since First Seen")
-    ax.set_ylabel("Views Gained Per Hour")
-    ax.grid(True, alpha=0.25)
-    ax.legend(loc="best")
+    ax_left.set_title("Raw View Growth Rate")
+    ax_left.set_xlabel("Hours Since First Seen")
+    ax_left.set_ylabel("Views Gained Per Hour")
+    ax_left.grid(True, alpha=0.25)
+    ax_left.legend(loc="best")
+
+    ax_right.plot(
+        video_pct_15m["hours_since_first_seen"],
+        video_pct_15m["view_pct_change_15m"],
+        linewidth=2.0,
+        label=f"Video: {resolved_video_id}",
+    )
+    ax_right.plot(
+        short_pct_15m["hours_since_first_seen"],
+        short_pct_15m["view_pct_change_15m"],
+        linewidth=2.0,
+        label=f"Short: {resolved_short_id}",
+    )
+    ax_right.set_title("% View Change Over Previous 15 Min")
+    ax_right.set_xlabel("Hours Since First Seen")
+    ax_right.set_ylabel("Percent Change (%)")
+    ax_right.grid(True, alpha=0.25)
+    ax_right.legend(loc="best")
 
     fig.tight_layout()
     fig.savefig(args.output, dpi=150)

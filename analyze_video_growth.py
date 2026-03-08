@@ -65,22 +65,23 @@ def plot_metric_pair(
     out_path: Path,
 ) -> None:
     fig, axes = plt.subplots(2, 1, figsize=(11, 9), sharex=True)
+    ax_video, ax_shorts = axes
 
     _plot_panel(
-        axes[0],
+        ax_video,
         video_df,
         metric,
         ylabel,
         f"Regular Videos: {ylabel} vs Hours Since First Seen",
     )
     _plot_panel(
-        axes[1],
+        ax_shorts,
         shorts_df,
         metric,
         ylabel,
         f"Shorts: {ylabel} vs Hours Since First Seen",
     )
-    axes[1].set_xlabel("Hours Since First Seen")
+    ax_shorts.set_xlabel("Hours Since First Seen")
 
     fig.tight_layout()
     fig.savefig(out_path, dpi=150)
