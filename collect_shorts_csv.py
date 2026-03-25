@@ -18,7 +18,7 @@ from keys import API_KEY as GOOGLE_API_KEY
 
 from googleapiclient.discovery import build
 
-CHANNEL_ID = "UCWJ2lWNubArHWmf3FIHbfcQ"
+CHANNEL_ID = "UCbcxFkd6B9xUU54InHv4Tig"
 SINCE_DATETIME = "2026-03-06T00:00:00Z"
 
 ISO8601_DURATION_RE = re.compile(
