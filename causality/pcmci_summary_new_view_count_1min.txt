@@ -1,0 +1,9 @@
+metric=new_view_count
+step=1min
+transform=logdiff
+tau_max=25
+pc_alpha=0.2
+alpha_level=0.05
+n_observations=1035
+significant_links=13
+significant_cross_links=1

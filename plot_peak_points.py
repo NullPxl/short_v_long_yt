@@ -55,10 +55,10 @@ def extract_peak_points(csv_path: Path, metric_col: str, rolling_window: int) ->
 
 def main() -> None:
     parser = argparse.ArgumentParser(description="Plot per-item peak growth points for videos vs shorts.")
-    parser.add_argument("--video-input", type=Path, default=Path("video_stats.csv"))
-    parser.add_argument("--shorts-input", type=Path, default=Path("shorts_stats.csv"))
+    parser.add_argument("--video-input", type=Path, default=Path("video_stats_combined.csv"))
+    parser.add_argument("--shorts-input", type=Path, default=Path("shorts_stats_combined.csv"))
     parser.add_argument("--rolling-window", type=int, default=20)
-    parser.add_argument("--output-dir", type=Path, default=Path("plots"))
+    parser.add_argument("--output-dir", type=Path, default=Path("final_plots"))
     args = parser.parse_args()
 
     if args.rolling_window <= 0:

@@ -1,0 +1,5 @@
+format,model,beta,sse
+videos,exp,1.0,3.7885790242218964
+videos,quad,1.0,3.3976837046291104
+shorts,exp,1.0,3.1613501027850064
+shorts,quad,0.7823,2.6304417540292455

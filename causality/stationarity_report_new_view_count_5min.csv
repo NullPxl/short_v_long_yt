@@ -1,0 +1,3 @@
+transform,variable,n_obs,adf_pvalue,kpss_pvalue,passes_stationarity,note,selected_transform
+logdiff,video,207,3.681412724379636e-11,0.06210770952126149,True,,True
+logdiff,shorts,207,7.503634655312188e-11,0.1,True,,True
