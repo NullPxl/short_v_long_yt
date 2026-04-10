@@ -108,6 +108,23 @@ def aggregate_to_timestep(df: pd.DataFrame, step: str) -> pd.DataFrame:
         aggregated["timestep"] - aggregated["timestep"].min()
     ).dt.total_seconds()
 
+    denominator = aggregated["unique_videos_captured"].replace(0, pd.NA)
+    aggregated["avg_view_count_per_item"] = aggregated["total_view_count"] / denominator
+    aggregated["avg_like_count_per_item"] = aggregated["total_like_count"] / denominator
+    aggregated["avg_comment_count_per_item"] = aggregated["total_comment_count"] / denominator
+    aggregated["avg_new_view_count_per_item"] = aggregated["new_view_count"] / denominator
+    aggregated["avg_new_like_count_per_item"] = aggregated["new_like_count"] / denominator
+    aggregated["avg_new_comment_count_per_item"] = aggregated["new_comment_count"] / denominator
+    normalized_cols = [
+        "avg_view_count_per_item",
+        "avg_like_count_per_item",
+        "avg_comment_count_per_item",
+        "avg_new_view_count_per_item",
+        "avg_new_like_count_per_item",
+        "avg_new_comment_count_per_item",
+    ]
+    aggregated[normalized_cols] = aggregated[normalized_cols].fillna(0.0)
+
     return aggregated
 
 

@@ -19,11 +19,19 @@ import aggregate_competition_timeseries as act
 
 
 DEFAULT_STEP = "5min"
-DEFAULT_METRIC = "new_view_count"
+DEFAULT_METRIC = "avg_new_view_count_per_item"
 DEFAULT_TAU_MAX = 12
 DEFAULT_PC_ALPHA = 0.2
 DEFAULT_ALPHA_LEVEL = 0.05
 TRANSFORM_ORDER = ("logdiff", "diff", "raw")
+METRIC_LABELS = {
+    "total_view_count": "Total Views",
+    "new_view_count": "New Views",
+    "new_comment_count": "New Comments",
+    "avg_view_count_per_item": "Average Views Per Item",
+    "avg_new_view_count_per_item": "Average New Views Per Item",
+    "avg_new_comment_count_per_item": "Average New Comments Per Item",
+}
 
 
 def build_joint_series(
@@ -31,9 +39,16 @@ def build_joint_series(
     shorts_input: Path,
     step: str,
     metric: str,
+    category: str = "",
 ) -> pd.DataFrame:
     video_raw = act.load_and_prepare(video_input)
     shorts_raw = act.load_and_prepare(shorts_input)
+
+    if category:
+        if "category" not in video_raw.columns or "category" not in shorts_raw.columns:
+            raise ValueError("Category filtering requested, but input CSVs do not include a 'category' column.")
+        video_raw = video_raw.loc[video_raw["category"] == category].copy()
+        shorts_raw = shorts_raw.loc[shorts_raw["category"] == category].copy()
 
     video_agg = act.aggregate_to_timestep(video_raw, step)
     shorts_agg = act.aggregate_to_timestep(shorts_raw, step)
@@ -88,6 +103,10 @@ def stationarity_summary(series: pd.Series) -> dict[str, float | bool | str]:
 
 def apply_transform(df: pd.DataFrame, transform: str) -> pd.DataFrame:
     transformed = df.copy()
+    transformed[["video", "shorts"]] = transformed[["video", "shorts"]].apply(
+        pd.to_numeric,
+        errors="coerce",
+    )
     if transform == "raw":
         return transformed
     if transform == "diff":
@@ -171,6 +190,7 @@ def plot_series(
     transform_name: str,
     step_label: str,
     out_path: Path,
+    metric: str,
 ) -> None:
     out_path.parent.mkdir(parents=True, exist_ok=True)
 
@@ -179,8 +199,9 @@ def plot_series(
 
     raw_ax.plot(raw_df["timestep"], raw_df["video"], label="Videos", linewidth=1.6)
     raw_ax.plot(raw_df["timestep"], raw_df["shorts"], label="Shorts", linewidth=1.6)
-    raw_ax.set_title(f"Aggregate New Views per {step_label} Timestep")
-    raw_ax.set_ylabel("New Views")
+    metric_label = METRIC_LABELS.get(metric, metric)
+    raw_ax.set_title(f"{metric_label} per {step_label} Timestep")
+    raw_ax.set_ylabel(metric_label)
     raw_ax.grid(True, alpha=0.25)
     raw_ax.legend()
 
@@ -218,14 +239,14 @@ def main() -> None:
     parser.add_argument(
         "--video-input",
         type=Path,
-        default=Path("video_stats.csv"),
-        help="Regular videos CSV path (default: video_stats.csv)",
+        default=Path("video_stats_combined.csv"),
+        help="Regular videos CSV path (default: video_stats_combined.csv)",
     )
     parser.add_argument(
         "--shorts-input",
         type=Path,
-        default=Path("shorts_stats.csv"),
-        help="Shorts CSV path (default: shorts_stats.csv)",
+        default=Path("shorts_stats_combined.csv"),
+        help="Shorts CSV path (default: shorts_stats_combined.csv)",
     )
     parser.add_argument(
         "--step",
@@ -233,9 +254,21 @@ def main() -> None:
         help=f"Aggregation timestep (default: {DEFAULT_STEP})",
     )
     parser.add_argument(
+        "--category",
+        default="",
+        help="Optional category filter to apply before aggregation (for example: formula1)",
+    )
+    parser.add_argument(
         "--metric",
         default=DEFAULT_METRIC,
-        choices=["new_view_count", "new_like_count", "new_comment_count"],
+        choices=[
+            "total_view_count",
+            "new_view_count",
+            "new_comment_count",
+            "avg_view_count_per_item",
+            "avg_new_view_count_per_item",
+            "avg_new_comment_count_per_item",
+        ],
         help=f"Aggregate metric to analyze (default: {DEFAULT_METRIC})",
     )
     parser.add_argument(
@@ -259,15 +292,17 @@ def main() -> None:
     parser.add_argument(
         "--output-dir",
         type=Path,
-        default=Path("causality"),
-        help="Directory to write PCMCI outputs (default: causality)",
+        default=Path("final_causality"),
+        help="Directory to write PCMCI outputs (default: final_causality)",
     )
     args = parser.parse_args()
 
     args.output_dir.mkdir(parents=True, exist_ok=True)
     suffix = f"{args.metric}_{args.step}"
+    if args.category:
+        suffix = f"{args.category}_{suffix}"
 
-    joint_df = build_joint_series(args.video_input, args.shorts_input, args.step, args.metric)
+    joint_df = build_joint_series(args.video_input, args.shorts_input, args.step, args.metric, args.category)
     chosen_transform, stationarity_report = evaluate_transforms(joint_df)
     transformed_df = apply_transform(joint_df, chosen_transform)
 
@@ -284,7 +319,7 @@ def main() -> None:
     links_path = args.output_dir / f"pcmci_links_{suffix}.csv"
     significant_path = args.output_dir / f"pcmci_significant_links_{suffix}.csv"
     summary_path = args.output_dir / f"pcmci_summary_{suffix}.txt"
-    plot_path = Path("plots") / f"pcmci_series_{suffix}.png"
+    plot_path = args.output_dir / f"pcmci_series_{suffix}.png"
 
     stationarity_report.to_csv(stationarity_path, index=False)
     transformed_df.to_csv(transformed_path, index=False)
@@ -296,12 +331,14 @@ def main() -> None:
         transform_name=chosen_transform,
         step_label=act.format_step_label(args.step),
         out_path=plot_path,
+        metric=args.metric,
     )
 
     cross_links = significant_df.loc[significant_df["cross_series"]].copy()
     with summary_path.open("w", encoding="utf-8") as fh:
         fh.write(f"metric={args.metric}\n")
         fh.write(f"step={args.step}\n")
+        fh.write(f"category={args.category or 'all'}\n")
         fh.write(f"transform={chosen_transform}\n")
         fh.write(f"tau_max={args.tau_max}\n")
         fh.write(f"pc_alpha={args.pc_alpha}\n")

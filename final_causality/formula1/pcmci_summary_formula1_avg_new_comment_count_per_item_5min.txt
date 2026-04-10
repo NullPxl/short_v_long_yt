@@ -1,0 +1,10 @@
+metric=avg_new_comment_count_per_item
+step=5min
+category=formula1
+transform=logdiff
+tau_max=12
+pc_alpha=0.2
+alpha_level=0.05
+n_observations=348
+significant_links=5
+significant_cross_links=0

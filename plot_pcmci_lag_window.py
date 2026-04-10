@@ -14,9 +14,14 @@ import run_pcmci_causality as rpc
 
 
 DEFAULT_STEP = "1min"
-DEFAULT_METRIC = "new_view_count"
+DEFAULT_METRIC = "avg_new_view_count_per_item"
 DEFAULT_MIN_LAG_MINUTES = 5.0
 DEFAULT_MAX_LAG_MINUTES = 20.0
+METRIC_LABELS = {
+    "avg_view_count_per_item": "Average Views Per Item",
+    "avg_new_view_count_per_item": "Average New Views Per Item",
+    "avg_new_comment_count_per_item": "Average New Comments Per Item",
+}
 
 
 def zscore(series: pd.Series) -> pd.Series:
@@ -64,6 +69,9 @@ def plot_lag_window(
     chosen_lag_steps: int,
     chosen_lag_minutes: float,
     out_path: Path,
+    metric: str,
+    min_lag_minutes: float,
+    max_lag_minutes: float,
 ) -> None:
     out_path.parent.mkdir(parents=True, exist_ok=True)
 
@@ -84,6 +92,7 @@ def plot_lag_window(
 
     fig, axes = plt.subplots(3, 1, figsize=(13, 12))
     lag_ax, raw_ax, transformed_ax = axes
+    metric_label = METRIC_LABELS.get(metric, metric)
 
     lag_ax.plot(
         lag_profile["lag_minutes"],
@@ -100,6 +109,7 @@ def plot_lag_window(
             s=45,
             zorder=3,
         )
+    lag_ax.set_xlim(min_lag_minutes, max_lag_minutes)
     lag_ax.set_title("Lag Profile: Shorts Leading Video")
     lag_ax.set_xlabel("Lag Minutes")
     lag_ax.set_ylabel("Pearson Correlation")
@@ -117,7 +127,21 @@ def plot_lag_window(
         label=f"Shorts shifted by {chosen_lag_minutes:.0f} min",
         linewidth=1.4,
     )
-    raw_ax.set_title("Raw Curves Aligned at the Selected Lag")
+    raw_ax.scatter(
+        raw_aligned["timestep"],
+        zscore(raw_aligned["video"]),
+        s=10,
+        alpha=0.35,
+        color="#1f77b4",
+    )
+    raw_ax.scatter(
+        raw_aligned["timestep"],
+        zscore(raw_aligned["shorts_shifted"]),
+        s=10,
+        alpha=0.35,
+        color="#ff7f0e",
+    )
+    raw_ax.set_title(f"Raw {metric_label} Curves Aligned at the Selected Lag")
     raw_ax.set_ylabel("Z-Score")
     raw_ax.grid(True, alpha=0.25)
     raw_ax.legend()
@@ -134,7 +158,21 @@ def plot_lag_window(
         label=f"Shorts shifted by {chosen_lag_minutes:.0f} min",
         linewidth=1.4,
     )
-    transformed_ax.set_title("Transformed Curves Aligned at the Selected Lag")
+    transformed_ax.scatter(
+        transformed_aligned["timestep"],
+        zscore(transformed_aligned["video"]),
+        s=10,
+        alpha=0.35,
+        color="#1f77b4",
+    )
+    transformed_ax.scatter(
+        transformed_aligned["timestep"],
+        zscore(transformed_aligned["shorts_shifted"]),
+        s=10,
+        alpha=0.35,
+        color="#ff7f0e",
+    )
+    transformed_ax.set_title(f"Transformed {metric_label} Curves Aligned at the Selected Lag")
     transformed_ax.set_xlabel("Captured Timestep (UTC)")
     transformed_ax.set_ylabel("Z-Score")
     transformed_ax.grid(True, alpha=0.25)
@@ -153,26 +191,33 @@ def main() -> None:
             "and aligned video/shorts curves."
         )
     )
-    parser.add_argument("--video-input", type=Path, default=Path("video_stats.csv"))
-    parser.add_argument("--shorts-input", type=Path, default=Path("shorts_stats.csv"))
+    parser.add_argument("--video-input", type=Path, default=Path("video_stats_combined.csv"))
+    parser.add_argument("--shorts-input", type=Path, default=Path("shorts_stats_combined.csv"))
     parser.add_argument("--step", default=DEFAULT_STEP)
     parser.add_argument("--metric", default=DEFAULT_METRIC)
+    parser.add_argument("--category", default="")
     parser.add_argument("--min-lag-minutes", type=float, default=DEFAULT_MIN_LAG_MINUTES)
     parser.add_argument("--max-lag-minutes", type=float, default=DEFAULT_MAX_LAG_MINUTES)
     parser.add_argument(
         "--links-input",
         type=Path,
-        default=Path("causality") / "pcmci_links_new_view_count_1min.csv",
+        default=Path("final_causality") / "pcmci_links_avg_new_view_count_per_item_1min.csv",
     )
     parser.add_argument(
         "--output-path",
         type=Path,
-        default=Path("plots") / "pcmci_lag_window_new_view_count_1min.png",
+        default=Path("final_causality") / "pcmci_lag_window_avg_new_view_count_per_item_1min.png",
     )
     args = parser.parse_args()
 
-    raw_df = rpc.build_joint_series(args.video_input, args.shorts_input, args.step, args.metric)
-    transformed_input_path = Path("causality") / f"pcmci_input_{args.metric}_{args.step}.csv"
+    suffix = f"{args.metric}_{args.step}"
+    if args.category:
+        suffix = f"{args.category}_{suffix}"
+
+    raw_df = rpc.build_joint_series(args.video_input, args.shorts_input, args.step, args.metric, args.category)
+    transformed_input_path = Path("causality") / f"pcmci_input_{suffix}.csv"
+    if not transformed_input_path.exists():
+        transformed_input_path = Path("final_causality") / f"pcmci_input_{suffix}.csv"
     if transformed_input_path.exists():
         transformed_df = pd.read_csv(transformed_input_path, parse_dates=["timestep"])
     else:
@@ -215,6 +260,9 @@ def main() -> None:
         chosen_lag_steps=chosen_lag_steps,
         chosen_lag_minutes=chosen_lag_minutes,
         out_path=args.output_path,
+        metric=args.metric,
+        min_lag_minutes=args.min_lag_minutes,
+        max_lag_minutes=args.max_lag_minutes,
     )
 
     print(f"Wrote: {args.output_path.resolve()}")

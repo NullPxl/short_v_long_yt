@@ -1,0 +1,10 @@
+metric=avg_new_view_count_per_item
+step=5min
+category=basketball
+transform=diff
+tau_max=12
+pc_alpha=0.2
+alpha_level=0.05
+n_observations=4855
+significant_links=35
+significant_cross_links=20

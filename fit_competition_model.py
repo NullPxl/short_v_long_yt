@@ -13,7 +13,7 @@ import aggregate_competition_timeseries as act
 
 
 DEFAULT_STEP = "1min"
-DEFAULT_STATE_COLUMN = "new_view_count"
+DEFAULT_STATE_COLUMN = "avg_new_view_count_per_item"
 DEFAULT_TARGET_MODE = "delta"
 
 
@@ -23,9 +23,19 @@ def build_aligned_states(
     step: str,
     state_column: str,
     target_mode: str,
+    category: str,
 ) -> pd.DataFrame:
-    video = act.aggregate_to_timestep(act.load_and_prepare(video_input), step)
-    shorts = act.aggregate_to_timestep(act.load_and_prepare(shorts_input), step)
+    video_raw = act.load_and_prepare(video_input)
+    shorts_raw = act.load_and_prepare(shorts_input)
+
+    if category:
+        if "category" not in video_raw.columns or "category" not in shorts_raw.columns:
+            raise ValueError("Category filtering requested, but input CSVs do not include a 'category' column.")
+        video_raw = video_raw.loc[video_raw["category"] == category].copy()
+        shorts_raw = shorts_raw.loc[shorts_raw["category"] == category].copy()
+
+    video = act.aggregate_to_timestep(video_raw, step)
+    shorts = act.aggregate_to_timestep(shorts_raw, step)
 
     merged = shorts[["timestep", state_column]].rename(columns={state_column: "S"})
     merged = merged.merge(
@@ -48,6 +58,9 @@ def build_aligned_states(
 
 
 def fit_side(state: np.ndarray, other: np.ndarray, delta: np.ndarray) -> tuple[np.ndarray, np.ndarray, float]:
+    state = state.astype(float)
+    other = other.astype(float)
+    delta = delta.astype(float)
     X = np.column_stack([state, state**2, state * other, np.ones_like(state)])
     coef = np.linalg.lstsq(X, delta, rcond=None)[0]
     pred = X @ coef
@@ -90,13 +103,19 @@ def main() -> None:
             "dV/dt = aV*V - bV*V^2 - cV*S*V."
         )
     )
-    parser.add_argument("--video-input", type=Path, default=Path("video_stats.csv"))
-    parser.add_argument("--shorts-input", type=Path, default=Path("shorts_stats.csv"))
-    parser.add_argument("--step", default=DEFAULT_STEP)
+    parser.add_argument("--video-input", type=Path, default=Path("video_stats_combined.csv"))
+    parser.add_argument("--shorts-input", type=Path, default=Path("shorts_stats_combined.csv"))
+    parser.add_argument("--step", default="5min")
+    parser.add_argument("--category", default="", help="Optional category filter, e.g. basketball")
     parser.add_argument(
         "--state-column",
         default=DEFAULT_STATE_COLUMN,
-        choices=["new_view_count", "total_view_count"],
+        choices=[
+            "new_view_count",
+            "total_view_count",
+            "avg_new_view_count_per_item",
+            "avg_view_count_per_item",
+        ],
         help=f"State variable to model (default: {DEFAULT_STATE_COLUMN})",
     )
     parser.add_argument(
@@ -105,7 +124,7 @@ def main() -> None:
         choices=["next_state", "delta"],
         help="Whether to fit next-timestep state directly or timestep-to-timestep change (default: delta)",
     )
-    parser.add_argument("--output-dir", type=Path, default=Path("competition"))
+    parser.add_argument("--output-dir", type=Path, default=Path("final_competition"))
     args = parser.parse_args()
 
     args.output_dir.mkdir(parents=True, exist_ok=True)
@@ -115,7 +134,11 @@ def main() -> None:
         args.step,
         args.state_column,
         args.target_mode,
+        args.category,
     )
+    numeric_columns = ["S", "V", "target_S", "target_V"]
+    df[numeric_columns] = df[numeric_columns].apply(pd.to_numeric, errors="coerce")
+    df = df.dropna(subset=numeric_columns).reset_index(drop=True)
 
     scale = max(
         float(df["S"].abs().max()),
@@ -182,10 +205,12 @@ def main() -> None:
     ratios = pd.DataFrame([{"alpha": alpha, "beta": beta, "scale_used": scale}])
 
     suffix = f"{args.state_column}_{args.target_mode}_{args.step}"
+    if args.category:
+        suffix = f"{args.category}_{suffix}"
     coefficients_path = args.output_dir / f"competition_coefficients_{suffix}.csv"
     ratios_path = args.output_dir / f"competition_ratios_{suffix}.csv"
     aligned_path = args.output_dir / f"competition_series_{suffix}.csv"
-    plot_path = Path("plots") / f"competition_fit_{suffix}.png"
+    plot_path = args.output_dir / f"competition_fit_{suffix}.png"
 
     coefficients.to_csv(coefficients_path, index=False)
     ratios.to_csv(ratios_path, index=False)
@@ -199,6 +224,7 @@ def main() -> None:
     print(f"Wrote: {ratios_path.resolve()}")
     print(f"Wrote: {aligned_path.resolve()}")
     print(f"Wrote: {plot_path.resolve()}")
+    print(f"category={args.category or 'all'}")
     print(f"target_mode={args.target_mode}")
     print(f"a_S={a_S:.6f}, b_S={b_S:.6f}, c_S={c_S:.6f}, r2_S={r2_S:.4f}")
     print(f"a_V={a_V:.6f}, b_V={b_V:.6f}, c_V={c_V:.6f}, r2_V={r2_V:.4f}")
